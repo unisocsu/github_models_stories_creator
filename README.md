@@ -25,7 +25,10 @@ required. It requests:
 3. Saves and pushes each completed chapter.
 4. After the first draft, repeatedly audits continuity and revises chapters
    until the configured time budget is nearly exhausted.
-5. Uploads a `book-and-progress` artifact even if the run fails.
+5. Pushes a checkpoint after every chapter and meaningful revision. If a run is
+   cancelled or reaches its time limit, start the workflow again: it resumes from
+   the saved outline and chapter files instead of starting over.
+6. Uploads a `book-and-progress` artifact even if the run fails.
 
 The manuscript is stored under `books/current/`, with the combined
 `manuscript.md`, individual chapters, continuity notes, editorial reviews,
