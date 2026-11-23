@@ -56,6 +56,42 @@ state: dict[str, Any] = {
 }
 
 
+def load_existing() -> None:
+    """Resume from the last pushed checkpoint instead of overwriting prior work."""
+    progress_file = OUT / "progress.json"
+    if progress_file.exists():
+        try:
+            previous_state = json.loads(progress_file.read_text(encoding="utf-8"))
+            state["revision_count"] = int(previous_state.get("revision_count", 0))
+        except (ValueError, OSError, TypeError):
+            log("Could not parse prior progress metadata; continuing with safe defaults.")
+
+    outline_file = OUT / "outline.md"
+    if outline_file.exists():
+        outline.extend(
+            line.strip() for line in outline_file.read_text(encoding="utf-8").splitlines()
+            if re.match(r"^\\s*\\d+[.)]\\s*\\S", line)
+        )
+
+    chapter_dir = OUT / "chapters"
+    if chapter_dir.exists():
+        for path in sorted(chapter_dir.glob("chapter-*.md")):
+            chapter = path.read_text(encoding="utf-8").strip()
+            if chapter:
+                chapters.append(chapter)
+
+    notes_file = OUT / "continuity-notes.md"
+    if notes_file.exists():
+        raw_notes = notes_file.read_text(encoding="utf-8")
+        summaries.extend(
+            part.strip() for part in re.split(r"(?=^## Chapter \\d+)", raw_notes, flags=re.MULTILINE)
+            if part.strip()
+        )
+
+    if chapters or outline:
+        log(f"Resuming checkpoint: {len(chapters)} chapters already saved; {len(outline)} planned.")
+
+
 def log(message: str) -> None:
     elapsed = int(time.monotonic() - START)
     left = max(0, int(DEADLINE - time.monotonic()))
@@ -183,6 +219,9 @@ def chapter_summary(index: int, text: str) -> str:
 
 
 def write_outline() -> None:
+    if outline:
+        log("Using the saved outline; no need to plan the book again.")
+        return
     state["phase"] = "planning"
     save_state()
     chapter_guess = max(12, min(32, round(TARGET_WORDS / max(CHAPTER_WORDS, 1000))))
@@ -212,7 +251,9 @@ def write_outline() -> None:
 
 def write_draft() -> None:
     state["phase"] = "first-draft"
-    for index, heading in enumerate(outline, 1):
+    first_missing = len(chapters) + 1
+    for index in range(first_missing, len(outline) + 1):
+        heading = outline[index - 1]
         if remaining() < 180:
             log("Stopping chapter drafting early to preserve time for a clean checkpoint.")
             break
@@ -320,9 +361,13 @@ def main() -> None:
         raise RuntimeError("GITHUB_TOKEN is missing.")
     if not SKILL.strip():
         raise RuntimeError("The story-craft skill file is empty.")
+    load_existing()
     write_outline()
     write_draft()
-    revision_loop()
+    if len(chapters) >= len(outline):
+        revision_loop()
+    else:
+        log("The first draft is not complete yet; saved progress will resume on the next run.")
     state["phase"] = "time-budget-complete"
     state["result"] = "Draft completed and/or revised until the configured time budget."
     save_manuscript()
