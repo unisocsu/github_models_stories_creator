@@ -70,7 +70,7 @@ def load_existing() -> None:
     if outline_file.exists():
         outline.extend(
             line.strip() for line in outline_file.read_text(encoding="utf-8").splitlines()
-            if re.match(r"^\\s*\\d+[.)]\\s*\\S", line)
+            if re.match(r"^\s*\d+[.)]\s*\S", line)
         )
 
     chapter_dir = OUT / "chapters"
@@ -84,7 +84,7 @@ def load_existing() -> None:
     if notes_file.exists():
         raw_notes = notes_file.read_text(encoding="utf-8")
         summaries.extend(
-            part.strip() for part in re.split(r"(?=^## Chapter \\d+)", raw_notes, flags=re.MULTILINE)
+            part.strip() for part in re.split(r"(?=^## Chapter \d+)", raw_notes, flags=re.MULTILINE)
             if part.strip()
         )
 
