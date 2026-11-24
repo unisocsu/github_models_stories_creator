@@ -1,13 +1,13 @@
 {
   "title": "שומרי האופק",
-  "model": "openai/gpt-4.1",
+  "model": "gemini-3.8-flash",
   "language": "Hebrew",
   "phase": "error",
   "chapters_written": 0,
   "chapters_planned": 0,
   "revision_count": 0,
-  "started_at_utc": "2026-11-24T11:50:29Z",
-  "updated_at_utc": "2026-11-24T11:50:30Z",
-  "error": "RuntimeError: GitHub Models returned non-JSON data (HTTP 200, Content-Type=text/plain, body_length=4); response=OK",
-  "finished_at_utc": "2026-11-24T11:50:30Z"
+  "started_at_utc": "2026-11-24T12:04:22Z",
+  "updated_at_utc": "2026-11-24T12:11:19Z",
+  "error": "RuntimeError: Gemini request failed after retries: Gemini temporarily unavailable or rate-limited (HTTP 503); response={\"error\":{\"message\":\"gemini-3.8-flash is currently experiencing high demand, spikes in demand are usually temporary. Please try again later.\",\"code\":\"service_unavailable\"}}.",
+  "finished_at_utc": "2026-11-24T12:11:19Z"
 }
