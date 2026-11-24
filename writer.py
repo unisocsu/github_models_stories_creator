@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Long-form book writer powered by GitHub Models.
+"""Long-form book writer powered by the Gemini Interactions API.
 
 The manuscript is checkpointed to the repository after every chapter and edit.
 Once the first complete draft exists, the agent spends the remaining time
@@ -18,9 +18,13 @@ from typing import Any
 
 import requests
 
-API_URL = "https://models.github.ai/inference/chat/completions"
-TOKEN = os.environ["GITHUB_TOKEN"]
-MODEL = os.environ.get("GITHUB_MODELS_MODEL", "openai/gpt-4.1")
+API_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
+GEMINI_KEYS = [
+    os.environ.get("GEMINI_KEY1", "").strip(),
+    os.environ.get("GEMINI_KEY2", "").strip(),
+]
+GEMINI_KEYS = [key for key in GEMINI_KEYS if key]
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 TITLE = os.environ.get("BOOK_TITLE", "Untitled")
 INSTRUCTIONS = os.environ.get("BOOK_INSTRUCTIONS", "")
 LANGUAGE = os.environ.get("BOOK_LANGUAGE", "Hebrew")
@@ -35,11 +39,7 @@ SKILL = SKILL_PATH.read_text(encoding="utf-8")
 START = time.monotonic()
 DEADLINE = START + RUN_MINUTES * 60
 SESSION = requests.Session()
-SESSION.headers.update({
-    "Authorization": f"Bearer {TOKEN}",
-    "Content-Type": "application/json",
-    "Accept": "application/vnd.github+json",
-})
+SESSION.headers.update({"Content-Type": "application/json", "Accept": "application/json"})
 
 chapters: list[str] = []
 summaries: list[str] = []
@@ -156,108 +156,143 @@ def checkpoint(label: str) -> None:
 
 
 def ask(system: str, prompt: str, max_tokens: int = 5000, temperature: float = 0.75) -> str:
+    """Call Gemini, rotating between configured keys on authentication or transient errors."""
     if remaining() < 45:
         raise TimeoutError("Not enough time remains for another model request.")
+    if not GEMINI_KEYS:
+        raise RuntimeError("Neither GEMINI_KEY1 nor GEMINI_KEY2 is configured in GitHub Actions secrets.")
+
     payload = {
         "model": MODEL,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "top_p": 0.95,
+        "system_instruction": system,
+        "input": prompt,
+        "store": False,
+        "stream": False,
+        "generation_config": {
+            "max_output_tokens": max_tokens,
+            "temperature": temperature,
+            "top_p": 0.95,
+            "thinking_level": "low",
+        },
     }
 
     last_error = None
-    for attempt in range(8):
+    attempts = 8
+    for attempt in range(attempts):
         if remaining() < 45:
-            raise TimeoutError("Time budget reached while waiting to call the model.")
+            raise TimeoutError("Time budget reached while waiting to call Gemini.")
+        key_index = attempt % len(GEMINI_KEYS)
+        key = GEMINI_KEYS[key_index]
         try:
-            response = SESSION.post(API_URL, json=payload, timeout=(20, 240))
+            response = SESSION.post(
+                API_URL,
+                headers={"x-goog-api-key": key},
+                json=payload,
+                timeout=(20, 300),
+            )
             status = response.status_code
             content_type = response.headers.get("Content-Type", "(missing)")
             body = response.text or ""
             body_preview = re.sub(r"\s+", " ", body[:1200]).strip()
 
             if status in (401, 403):
-                raise RuntimeError(
-                    f"GitHub Models authentication/permission error (HTTP {status}); "
-                    f"Content-Type={content_type}; response={body_preview or '(empty body)'}. "
-                    "Check that the workflow token has Models: read permission and that "
-                    "GitHub Models access is enabled for this repository/account."
+                last_error = RuntimeError(
+                    f"Gemini API key {key_index + 1} was rejected "
+                    f"(HTTP {status}, Content-Type={content_type}); "
+                    f"response={body_preview or '(empty body)'}."
                 )
+                if attempt + 1 < min(len(GEMINI_KEYS), attempts):
+                    log("Gemini rejected one key; trying the other configured key.")
+                    continue
+                raise last_error
+
             if status in (400, 404, 422):
                 raise RuntimeError(
-                    f"GitHub Models rejected the request (HTTP {status}); "
-                    f"Content-Type={content_type}; response={body_preview or '(empty body)'}. "
-                    "Check the model identifier, endpoint, and request parameters."
+                    f"Gemini rejected the request (HTTP {status}, Content-Type={content_type}); "
+                    f"response={body_preview or '(empty body)'}. Check the model ID and request fields."
                 )
+
             if status == 429 or status in (500, 502, 503, 504):
                 retry_after = response.headers.get("Retry-After")
-                delay = min(180, int(retry_after)) if retry_after and retry_after.isdigit() else min(120, 8 * (2 ** attempt))
-                log(f"Model API returned HTTP {status}; Content-Type={content_type}; retrying in {delay}s.")
-                time.sleep(min(delay, max(1, remaining() - 30)))
-                continue
+                delay = min(180, int(retry_after)) if retry_after and retry_after.isdigit() else min(120, 10 * (2 ** (attempt // max(1, len(GEMINI_KEYS)))))
+                last_error = RuntimeError(
+                    f"Gemini temporarily unavailable or rate-limited (HTTP {status}); "
+                    f"response={body_preview or '(empty body)'}."
+                )
+                if attempt + 1 < attempts:
+                    log(f"Gemini returned HTTP {status}; trying the next key or retrying with backoff.")
+                    if (attempt + 1) % len(GEMINI_KEYS) == 0:
+                        time.sleep(min(delay, max(1, remaining() - 30)))
+                    continue
+                break
+
             if status < 200 or status >= 300:
                 raise RuntimeError(
-                    f"GitHub Models returned unexpected HTTP {status}; "
-                    f"Content-Type={content_type}; response={body_preview or '(empty body)'}."
+                    f"Gemini returned unexpected HTTP {status} "
+                    f"(Content-Type={content_type}); response={body_preview or '(empty body)'}."
                 )
             if not body.strip():
-                raise RuntimeError(
-                    f"GitHub Models returned an empty HTTP {status} response "
-                    f"(Content-Type={content_type})."
-                )
+                raise RuntimeError(f"Gemini returned an empty HTTP {status} response.")
+
             try:
                 data = response.json()
             except ValueError as exc:
                 raise RuntimeError(
-                    f"GitHub Models returned non-JSON data (HTTP {status}, "
-                    f"Content-Type={content_type}, body_length={len(body)}); "
-                    f"response={body_preview or '(empty body)'}"
+                    f"Gemini returned non-JSON data (HTTP {status}, Content-Type={content_type}, "
+                    f"body_length={len(body)}); response={body_preview or '(empty body)'}"
                 ) from exc
 
-            try:
-                text = data["choices"][0]["message"].get("content") or ""
-            except (KeyError, IndexError, TypeError) as exc:
+            status_text = data.get("status", "")
+            if status_text == "incomplete":
                 raise RuntimeError(
-                    f"GitHub Models response had an unexpected JSON structure "
-                    f"(HTTP {status}, Content-Type={content_type}); "
-                    f"response={body_preview or '(empty body)'}"
-                ) from exc
-            if not text.strip():
+                    "Gemini marked the response incomplete (likely output-token limit). "
+                    "Increase the chapter token budget or shorten the prompt."
+                )
+            if status_text not in ("", "completed"):
+                raise RuntimeError(f"Gemini interaction ended with status {status_text!r}.")
+
+            output_parts = []
+            for step in data.get("steps", []):
+                if step.get("type") == "model_output":
+                    for part in step.get("content", []):
+                        if part.get("type") == "text" and part.get("text"):
+                            output_parts.append(part["text"])
+            result = "
+".join(output_parts).strip()
+            if not result:
                 raise RuntimeError(
-                    f"GitHub Models returned no message content (HTTP {status}); "
+                    f"Gemini response contained no model_output text; "
                     f"response={body_preview or '(empty body)'}"
                 )
-            return text.strip()
+            usage = data.get("usage", {})
+            total = usage.get("total_tokens")
+            if total:
+                log(f"Gemini response received ({total} total tokens).")
+            return result
 
         except RuntimeError as exc:
             last_error = exc
             message = str(exc)
-            # Configuration, permission, and malformed-request errors will not
-            # improve by retrying. Stop immediately and preserve the diagnosis.
             if any(marker in message for marker in (
-                "authentication/permission error", "rejected the request",
-                "unexpected HTTP", "non-JSON data", "unexpected JSON structure",
-                "no message content", "empty HTTP"
+                "rejected the request", "unexpected HTTP", "non-JSON data",
+                "incomplete", "no model_output text", "empty HTTP",
+                "ended with status"
             )):
                 raise
-            if attempt == 7:
+            if attempt == attempts - 1:
                 break
             delay = min(90, 5 * (2 ** attempt))
-            log(f"Model request failed ({message}); retrying in {delay}s.")
+            log(f"Gemini request failed ({message}); retrying in {delay}s.")
             time.sleep(min(delay, max(1, remaining() - 30)))
         except requests.RequestException as exc:
             last_error = exc
-            if attempt == 7:
+            if attempt == attempts - 1:
                 break
             delay = min(90, 5 * (2 ** attempt))
-            log(f"Model network request failed ({type(exc).__name__}: {exc}); retrying in {delay}s.")
+            log(f"Gemini network request failed ({type(exc).__name__}); retrying in {delay}s.")
             time.sleep(min(delay, max(1, remaining() - 30)))
 
-    raise RuntimeError(f"GitHub Models request failed after retries: {last_error}")
+    raise RuntimeError(f"Gemini request failed after retries: {last_error}")
 
 
 def system_prompt(stage: str) -> str:
@@ -420,9 +455,10 @@ def revision_loop() -> None:
 
 
 def main() -> None:
-    log(f"Starting book project with model {MODEL}; active budget {RUN_MINUTES} minutes.")
-    if not TOKEN:
-        raise RuntimeError("GITHUB_TOKEN is missing.")
+    log(f"Starting book project with Gemini model {MODEL}; active budget {RUN_MINUTES} minutes.")
+    if not GEMINI_KEYS:
+        raise RuntimeError("Missing GEMINI_KEY1 and GEMINI_KEY2 repository secrets.")
+    log(f"Loaded {len(GEMINI_KEYS)} Gemini API key(s).")
     if not SKILL.strip():
         raise RuntimeError("The story-craft skill file is empty.")
     load_existing()
