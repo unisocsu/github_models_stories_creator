@@ -9,7 +9,7 @@ A long-running book-writing agent for GitHub Actions, powered by the Google Gemi
 3. Choose **Run workflow** and enter the title, detailed brief, language and Gemini model.
 4. The default model is `gemini-3.8-flash`. Start with 50,000 target words, about 2,200 words per chapter, and 230 minutes of active writing/editing time.
 
-The workflow reads both API keys from GitHub Secrets. Keys are sent only in the HTTPS request header and are never written to the manuscript or logs. If one key is rejected, the client tries the other; temporary rate-limit and server errors trigger retries with backoff.
+The workflow reads both API keys from GitHub Secrets. Keys are sent only in the HTTPS request header and are never written to the manuscript or logs. If one key is rejected, the client tries the other. For temporary HTTP 429/5xx failures or an unavailable model, it retries and then automatically fails over from the selected model to Gemini Flash-Lite backups (`gemini-3.5-flash-lite`, then `gemini-3.1-flash-lite`). The active model is recorded in `books/current/progress.json`.
 
 **Quota note:** Gemini rate limits are generally applied at the Google Cloud project/model level, not separately to each API key. Two keys belonging to the same project improve credential failover, but do not double that project's quota. The exact RPM, TPM and RPD limits shown in Google AI Studio depend on the project, model and tier.
 
