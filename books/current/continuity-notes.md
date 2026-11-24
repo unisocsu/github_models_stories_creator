@@ -9,3 +9,6 @@ Summary pending; consult chapter-03.md.
 
 ## Chapter 4
 Summary pending; consult chapter-04.md.
+
+## Chapter 5
+Summary pending; consult chapter-05.md.

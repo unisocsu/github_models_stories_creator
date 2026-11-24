@@ -1,11 +1,13 @@
 {
   "title": "שומרי האופק",
-  "model": "gemini-3.5-flash-lite",
+  "model": "gemini-3.1-flash-lite",
   "language": "Hebrew",
-  "phase": "first-draft",
+  "phase": "error",
   "chapters_written": 5,
   "chapters_planned": 23,
   "revision_count": 0,
   "started_at_utc": "2026-11-24T12:23:30Z",
-  "updated_at_utc": "2026-11-24T12:37:55Z"
+  "updated_at_utc": "2026-11-24T12:43:16Z",
+  "error": "RuntimeError: Gemini request failed on all configured models: Gemini temporarily unavailable or rate-limited (HTTP 503); response={\"error\":{\"message\":\"gemini-3.1-flash-lite is currently experiencing high demand, spikes in demand are usually temporary. Please try again later.\",\"code\":\"service_unavailable\"}}.",
+  "finished_at_utc": "2026-11-24T12:43:16Z"
 }
