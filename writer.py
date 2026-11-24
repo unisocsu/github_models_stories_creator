@@ -178,7 +178,7 @@ def ask(system: str, prompt: str, max_tokens: int = 5000, temperature: float = 0
             status = response.status_code
             content_type = response.headers.get("Content-Type", "(missing)")
             body = response.text or ""
-            body_preview = re.sub(r"\\s+", " ", body[:1200]).strip()
+            body_preview = re.sub(r"\s+", " ", body[:1200]).strip()
 
             if status in (401, 403):
                 raise RuntimeError(
