@@ -168,31 +168,95 @@ def ask(system: str, prompt: str, max_tokens: int = 5000, temperature: float = 0
         "temperature": temperature,
         "top_p": 0.95,
     }
+
     last_error = None
     for attempt in range(8):
         if remaining() < 45:
             raise TimeoutError("Time budget reached while waiting to call the model.")
         try:
             response = SESSION.post(API_URL, json=payload, timeout=(20, 240))
-            if response.status_code in (429, 500, 502, 503, 504):
+            status = response.status_code
+            content_type = response.headers.get("Content-Type", "(missing)")
+            body = response.text or ""
+            body_preview = re.sub(r"\\s+", " ", body[:1200]).strip()
+
+            if status in (401, 403):
+                raise RuntimeError(
+                    f"GitHub Models authentication/permission error (HTTP {status}); "
+                    f"Content-Type={content_type}; response={body_preview or '(empty body)'}. "
+                    "Check that the workflow token has Models: read permission and that "
+                    "GitHub Models access is enabled for this repository/account."
+                )
+            if status in (400, 404, 422):
+                raise RuntimeError(
+                    f"GitHub Models rejected the request (HTTP {status}); "
+                    f"Content-Type={content_type}; response={body_preview or '(empty body)'}. "
+                    "Check the model identifier, endpoint, and request parameters."
+                )
+            if status == 429 or status in (500, 502, 503, 504):
                 retry_after = response.headers.get("Retry-After")
                 delay = min(180, int(retry_after)) if retry_after and retry_after.isdigit() else min(120, 8 * (2 ** attempt))
-                log(f"Model API returned {response.status_code}; retrying in {delay}s.")
+                log(f"Model API returned HTTP {status}; Content-Type={content_type}; retrying in {delay}s.")
                 time.sleep(min(delay, max(1, remaining() - 30)))
                 continue
-            response.raise_for_status()
-            data = response.json()
-            text = data["choices"][0]["message"].get("content") or ""
+            if status < 200 or status >= 300:
+                raise RuntimeError(
+                    f"GitHub Models returned unexpected HTTP {status}; "
+                    f"Content-Type={content_type}; response={body_preview or '(empty body)'}."
+                )
+            if not body.strip():
+                raise RuntimeError(
+                    f"GitHub Models returned an empty HTTP {status} response "
+                    f"(Content-Type={content_type})."
+                )
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"GitHub Models returned non-JSON data (HTTP {status}, "
+                    f"Content-Type={content_type}, body_length={len(body)}); "
+                    f"response={body_preview or '(empty body)'}"
+                ) from exc
+
+            try:
+                text = data["choices"][0]["message"].get("content") or ""
+            except (KeyError, IndexError, TypeError) as exc:
+                raise RuntimeError(
+                    f"GitHub Models response had an unexpected JSON structure "
+                    f"(HTTP {status}, Content-Type={content_type}); "
+                    f"response={body_preview or '(empty body)'}"
+                ) from exc
             if not text.strip():
-                raise RuntimeError("GitHub Models returned an empty response.")
+                raise RuntimeError(
+                    f"GitHub Models returned no message content (HTTP {status}); "
+                    f"response={body_preview or '(empty body)'}"
+                )
             return text.strip()
-        except (requests.RequestException, ValueError, KeyError, IndexError, RuntimeError) as exc:
+
+        except RuntimeError as exc:
+            last_error = exc
+            message = str(exc)
+            # Configuration, permission, and malformed-request errors will not
+            # improve by retrying. Stop immediately and preserve the diagnosis.
+            if any(marker in message for marker in (
+                "authentication/permission error", "rejected the request",
+                "unexpected HTTP", "non-JSON data", "unexpected JSON structure",
+                "no message content", "empty HTTP"
+            )):
+                raise
+            if attempt == 7:
+                break
+            delay = min(90, 5 * (2 ** attempt))
+            log(f"Model request failed ({message}); retrying in {delay}s.")
+            time.sleep(min(delay, max(1, remaining() - 30)))
+        except requests.RequestException as exc:
             last_error = exc
             if attempt == 7:
                 break
             delay = min(90, 5 * (2 ** attempt))
-            log(f"Model request failed ({exc}); retrying in {delay}s.")
+            log(f"Model network request failed ({type(exc).__name__}: {exc}); retrying in {delay}s.")
             time.sleep(min(delay, max(1, remaining() - 30)))
+
     raise RuntimeError(f"GitHub Models request failed after retries: {last_error}")
 
 
