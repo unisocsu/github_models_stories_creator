@@ -199,6 +199,8 @@ def ask(system: str, prompt: str, max_tokens: int = 5000, temperature: float = 0
             if remaining() < 45:
                 raise TimeoutError("Time budget reached while waiting to call Gemini.")
             saw_transient = False
+            retry_delay = 8
+            model_unavailable = False
             for key_index, key in enumerate(GEMINI_KEYS):
                 if remaining() < 45:
                     raise TimeoutError("Time budget reached while waiting to call Gemini.")
@@ -237,6 +239,7 @@ def ask(system: str, prompt: str, max_tokens: int = 5000, temperature: float = 0
                             f"response={body_preview or '(empty body)'}."
                         )
                         saw_transient = True
+                        model_unavailable = True
                         log(f"Model {model} is unavailable; trying a configured fallback.")
                         break
 
@@ -252,14 +255,13 @@ def ask(system: str, prompt: str, max_tokens: int = 5000, temperature: float = 0
                             f"response={body_preview or '(empty body)'}."
                         )
                         saw_transient = True
+                        retry_delay = delay
                         log(
                             f"Gemini model {model} returned HTTP {status}; "
                             f"round {round_index + 1}/2."
                         )
                         if key_index + 1 < len(GEMINI_KEYS):
                             continue
-                        if round_index == 0:
-                            time.sleep(min(delay, max(1, remaining() - 30)))
                         break
 
                     if status < 200 or status >= 300:
@@ -327,10 +329,10 @@ def ask(system: str, prompt: str, max_tokens: int = 5000, temperature: float = 0
                     log(f"Gemini network request failed ({type(exc).__name__}) on {model}.")
                     break
 
-            if not saw_transient:
+            if model_unavailable or not saw_transient:
                 break
             if round_index == 0 and remaining() > 60:
-                time.sleep(min(8, max(1, remaining() - 30)))
+                time.sleep(min(retry_delay, max(1, remaining() - 30)))
         log(f"Model {model} exhausted its retry window; checking the next fallback.")
 
     raise RuntimeError(f"Gemini request failed on all configured models: {last_error}")
