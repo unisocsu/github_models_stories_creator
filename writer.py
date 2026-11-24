@@ -156,14 +156,24 @@ def checkpoint(label: str) -> None:
 
 
 def ask(system: str, prompt: str, max_tokens: int = 5000, temperature: float = 0.75) -> str:
-    """Call Gemini, rotating between configured keys on authentication or transient errors."""
+    """Call Gemini with key rotation, retries, and automatic model failover."""
     if remaining() < 45:
         raise TimeoutError("Not enough time remains for another model request.")
     if not GEMINI_KEYS:
         raise RuntimeError("Neither GEMINI_KEY1 nor GEMINI_KEY2 is configured in GitHub Actions secrets.")
 
+    # Prefer the selected model, then move to independent supported Flash-Lite
+    # models if the selected model is overloaded or temporarily unavailable.
+    fallback_setting = os.environ.get(
+        "GEMINI_FALLBACK_MODELS",
+        "gemini-3.5-flash-lite,gemini-3.1-flash-lite",
+    )
+    candidates = [MODEL] + [
+        item.strip() for item in fallback_setting.split(",")
+        if item.strip() and item.strip() != MODEL
+    ]
+
     payload = {
-        "model": MODEL,
         "system_instruction": system,
         "input": prompt,
         "store": False,
@@ -176,123 +186,154 @@ def ask(system: str, prompt: str, max_tokens: int = 5000, temperature: float = 0
         },
     }
 
-    last_error = None
-    attempts = 8
-    for attempt in range(attempts):
+    last_error: Exception | None = None
+    for model_index, model in enumerate(candidates):
         if remaining() < 45:
-            raise TimeoutError("Time budget reached while waiting to call Gemini.")
-        key_index = attempt % len(GEMINI_KEYS)
-        key = GEMINI_KEYS[key_index]
-        try:
-            response = SESSION.post(
-                API_URL,
-                headers={"x-goog-api-key": key},
-                json=payload,
-                timeout=(20, 300),
-            )
-            status = response.status_code
-            content_type = response.headers.get("Content-Type", "(missing)")
-            body = response.text or ""
-            body_preview = re.sub(r"\s+", " ", body[:1200]).strip()
+            raise TimeoutError("Time budget reached before model failover could continue.")
+        payload["model"] = model
+        state["model"] = model
+        if model_index:
+            log(f"Failing over to backup model {model} after a temporary failure.")
+        # Two rounds per model; each round can try both configured credentials.
+        for round_index in range(2):
+            if remaining() < 45:
+                raise TimeoutError("Time budget reached while waiting to call Gemini.")
+            saw_transient = False
+            for key_index, key in enumerate(GEMINI_KEYS):
+                if remaining() < 45:
+                    raise TimeoutError("Time budget reached while waiting to call Gemini.")
+                try:
+                    response = SESSION.post(
+                        API_URL,
+                        headers={"x-goog-api-key": key},
+                        json=payload,
+                        timeout=(20, 180),
+                    )
+                    status = response.status_code
+                    content_type = response.headers.get("Content-Type", "(missing)")
+                    body = response.text or ""
+                    body_preview = re.sub(r"\s+", " ", body[:1200]).strip()
 
-            if status in (401, 403):
-                last_error = RuntimeError(
-                    f"Gemini API key {key_index + 1} was rejected "
-                    f"(HTTP {status}, Content-Type={content_type}); "
-                    f"response={body_preview or '(empty body)'}."
-                )
-                if attempt + 1 < min(len(GEMINI_KEYS), attempts):
-                    log("Gemini rejected one key; trying the other configured key.")
-                    continue
-                raise last_error
+                    if status in (401, 403):
+                        last_error = RuntimeError(
+                            f"Gemini API key {key_index + 1} was rejected "
+                            f"(HTTP {status}, Content-Type={content_type}); "
+                            f"response={body_preview or '(empty body)'}."
+                        )
+                        if key_index + 1 < len(GEMINI_KEYS):
+                            log("Gemini rejected one key; trying the other configured key.")
+                            continue
+                        raise last_error
 
-            if status in (400, 404, 422):
-                raise RuntimeError(
-                    f"Gemini rejected the request (HTTP {status}, Content-Type={content_type}); "
-                    f"response={body_preview or '(empty body)'}. Check the model ID and request fields."
-                )
+                    if status in (400, 422):
+                        raise RuntimeError(
+                            f"Gemini rejected the request (HTTP {status}, Content-Type={content_type}); "
+                            f"response={body_preview or '(empty body)'}. Check the request fields."
+                        )
 
-            if status == 429 or status in (500, 502, 503, 504):
-                retry_after = response.headers.get("Retry-After")
-                delay = min(180, int(retry_after)) if retry_after and retry_after.isdigit() else min(120, 10 * (2 ** (attempt // max(1, len(GEMINI_KEYS)))))
-                last_error = RuntimeError(
-                    f"Gemini temporarily unavailable or rate-limited (HTTP {status}); "
-                    f"response={body_preview or '(empty body)'}."
-                )
-                if attempt + 1 < attempts:
-                    log(f"Gemini returned HTTP {status}; trying the next key or retrying with backoff.")
-                    if (attempt + 1) % len(GEMINI_KEYS) == 0:
-                        time.sleep(min(delay, max(1, remaining() - 30)))
-                    continue
+                    if status == 404:
+                        last_error = RuntimeError(
+                            f"Gemini model {model} was not found or is unavailable (HTTP 404); "
+                            f"response={body_preview or '(empty body)'}."
+                        )
+                        saw_transient = True
+                        log(f"Model {model} is unavailable; trying a configured fallback.")
+                        break
+
+                    if status == 429 or status in (500, 502, 503, 504):
+                        retry_after = response.headers.get("Retry-After")
+                        delay = (
+                            min(90, int(retry_after))
+                            if retry_after and retry_after.isdigit()
+                            else (8 if status == 503 else 12) * (round_index + 1)
+                        )
+                        last_error = RuntimeError(
+                            f"Gemini temporarily unavailable or rate-limited (HTTP {status}); "
+                            f"response={body_preview or '(empty body)'}."
+                        )
+                        saw_transient = True
+                        log(
+                            f"Gemini model {model} returned HTTP {status}; "
+                            f"round {round_index + 1}/2."
+                        )
+                        if key_index + 1 < len(GEMINI_KEYS):
+                            continue
+                        if round_index == 0:
+                            time.sleep(min(delay, max(1, remaining() - 30)))
+                        break
+
+                    if status < 200 or status >= 300:
+                        raise RuntimeError(
+                            f"Gemini returned unexpected HTTP {status} "
+                            f"(Content-Type={content_type}); response={body_preview or '(empty body)'}."
+                        )
+                    if not body.strip():
+                        raise RuntimeError(f"Gemini returned an empty HTTP {status} response.")
+
+                    try:
+                        data = response.json()
+                    except ValueError as exc:
+                        raise RuntimeError(
+                            f"Gemini returned non-JSON data (HTTP {status}, Content-Type={content_type}, "
+                            f"body_length={len(body)}); response={body_preview or '(empty body)'}"
+                        ) from exc
+
+                    status_text = data.get("status", "")
+                    if status_text == "incomplete":
+                        raise RuntimeError(
+                            "Gemini marked the response incomplete (likely output-token limit). "
+                            "Increase the chapter token budget or shorten the prompt."
+                        )
+                    if status_text not in ("", "completed"):
+                        raise RuntimeError(f"Gemini interaction ended with status {status_text!r}.")
+
+                    output_parts = []
+                    for step in data.get("steps", []):
+                        if step.get("type") == "model_output":
+                            for part in step.get("content", []):
+                                if part.get("type") == "text" and part.get("text"):
+                                    output_parts.append(part["text"])
+                    result = "\n".join(output_parts).strip()
+                    if not result:
+                        raise RuntimeError(
+                            "Gemini response contained no model_output text; "
+                            f"response={body_preview or '(empty body)'}"
+                        )
+                    usage = data.get("usage", {})
+                    total = usage.get("total_tokens")
+                    if total:
+                        log(f"Gemini response received from {model} ({total} total tokens).")
+                    return result
+
+                except RuntimeError as exc:
+                    last_error = exc
+                    message = str(exc)
+                    if any(marker in message for marker in (
+                        "rejected the request", "unexpected HTTP", "non-JSON data",
+                        "incomplete", "no model_output text", "empty HTTP",
+                        "ended with status"
+                    )):
+                        raise
+                    if "was rejected" in message and key_index + 1 < len(GEMINI_KEYS):
+                        continue
+                    if "was rejected" in message:
+                        raise
+                    # HTTP 404 and transient statuses advance to the next model/round.
+                    saw_transient = True
+                    break
+                except requests.RequestException as exc:
+                    last_error = exc
+                    saw_transient = True
+                    log(f"Gemini network request failed ({type(exc).__name__}) on {model}.")
+                    break
+
+            if not saw_transient:
                 break
+            if round_index == 0 and remaining() > 60:
+                time.sleep(min(8, max(1, remaining() - 30)))
+        log(f"Model {model} exhausted its retry window; checking the next fallback.")
 
-            if status < 200 or status >= 300:
-                raise RuntimeError(
-                    f"Gemini returned unexpected HTTP {status} "
-                    f"(Content-Type={content_type}); response={body_preview or '(empty body)'}."
-                )
-            if not body.strip():
-                raise RuntimeError(f"Gemini returned an empty HTTP {status} response.")
-
-            try:
-                data = response.json()
-            except ValueError as exc:
-                raise RuntimeError(
-                    f"Gemini returned non-JSON data (HTTP {status}, Content-Type={content_type}, "
-                    f"body_length={len(body)}); response={body_preview or '(empty body)'}"
-                ) from exc
-
-            status_text = data.get("status", "")
-            if status_text == "incomplete":
-                raise RuntimeError(
-                    "Gemini marked the response incomplete (likely output-token limit). "
-                    "Increase the chapter token budget or shorten the prompt."
-                )
-            if status_text not in ("", "completed"):
-                raise RuntimeError(f"Gemini interaction ended with status {status_text!r}.")
-
-            output_parts = []
-            for step in data.get("steps", []):
-                if step.get("type") == "model_output":
-                    for part in step.get("content", []):
-                        if part.get("type") == "text" and part.get("text"):
-                            output_parts.append(part["text"])
-            result = "\n".join(output_parts).strip()
-            if not result:
-                raise RuntimeError(
-                    f"Gemini response contained no model_output text; "
-                    f"response={body_preview or '(empty body)'}"
-                )
-            usage = data.get("usage", {})
-            total = usage.get("total_tokens")
-            if total:
-                log(f"Gemini response received ({total} total tokens).")
-            return result
-
-        except RuntimeError as exc:
-            last_error = exc
-            message = str(exc)
-            if any(marker in message for marker in (
-                "rejected the request", "unexpected HTTP", "non-JSON data",
-                "incomplete", "no model_output text", "empty HTTP",
-                "ended with status"
-            )):
-                raise
-            if attempt == attempts - 1:
-                break
-            delay = min(90, 5 * (2 ** attempt))
-            log(f"Gemini request failed ({message}); retrying in {delay}s.")
-            time.sleep(min(delay, max(1, remaining() - 30)))
-        except requests.RequestException as exc:
-            last_error = exc
-            if attempt == attempts - 1:
-                break
-            delay = min(90, 5 * (2 ** attempt))
-            log(f"Gemini network request failed ({type(exc).__name__}); retrying in {delay}s.")
-            time.sleep(min(delay, max(1, remaining() - 30)))
-
-    raise RuntimeError(f"Gemini request failed after retries: {last_error}")
-
+    raise RuntimeError(f"Gemini request failed on all configured models: {last_error}")
 
 def system_prompt(stage: str) -> str:
     return (
