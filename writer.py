@@ -257,8 +257,7 @@ def ask(system: str, prompt: str, max_tokens: int = 5000, temperature: float = 0
                     for part in step.get("content", []):
                         if part.get("type") == "text" and part.get("text"):
                             output_parts.append(part["text"])
-            result = "
-".join(output_parts).strip()
+            result = "\n".join(output_parts).strip()
             if not result:
                 raise RuntimeError(
                     f"Gemini response contained no model_output text; "
