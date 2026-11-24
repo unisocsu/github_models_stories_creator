@@ -17,9 +17,9 @@ on:
         default: Hebrew
         type: string
       model:
-        description: GitHub Models model ID
+        description: Gemini model ID
         required: true
-        default: openai/gpt-4.1
+        default: gemini-3.8-flash
         type: string
       target_words:
         description: Approximate target length of the complete book
@@ -39,7 +39,6 @@ on:
 
 permissions:
   contents: write
-  models: read
 
 concurrency:
   group: book-writer-${{ github.workflow }}-${{ github.ref }}
@@ -65,8 +64,9 @@ jobs:
 
       - name: Write, revise and polish
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_MODELS_MODEL: ${{ inputs.model }}
+          GEMINI_KEY1: ${{ secrets.GEMINI_KEY1 }}
+          GEMINI_KEY2: ${{ secrets.GEMINI_KEY2 }}
+          GEMINI_MODEL: ${{ inputs.model }}
           BOOK_TITLE: ${{ inputs.title }}
           BOOK_INSTRUCTIONS: ${{ inputs.instructions }}
           BOOK_LANGUAGE: ${{ inputs.language }}
