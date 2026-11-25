@@ -52,6 +52,44 @@ exactly as they are, because the script finds them by name.
 - Vary the shape of chapters: some fast and short in effect, some slow and
   emotional, some built around a single conversation.
 
+- **Build the novel as a multi-arena narrative when the story calls for it.**
+  Do not limit the book to one continuous storyline or to the protagonist's
+  immediate surroundings. Design several distinct arenas that can initially
+  unfold independently and converge only when the plot has earned that meeting.
+  - Give each arena its own location, viewpoint characters, immediate goals,
+    conflicts, stakes, atmosphere and evolving subplot. Its characters must act
+    on their own motivations; they must not exist merely to deliver information
+    to the protagonist.
+  - Let events continue in an arena even while the narrative follows another.
+    A change of viewpoint should reveal a consequential development, deepen
+    character or create tension—not serve as an arbitrary interruption.
+  - The reader may learn facts that characters in other arenas do not know.
+    Preserve these differences in knowledge. Do not let characters react to
+    information they have not plausibly received.
+  - Plant subtle, concrete connections between arenas early: recurring signals,
+    objects, consequences, institutions, locations, decisions or unexplained
+    events. At first, these links may be misunderstood or appear unrelated.
+  - Delay direct meetings and explicit explanations until they create a
+    meaningful reversal, discovery or collision. Do not rush to connect every
+    thread, and do not keep arenas artificially separate after their collision
+    becomes necessary.
+  - Plan how and why the arenas will converge: identify the causal chain,
+    turning point and costs of convergence. Their union should change the
+    direction of the main story, not merely bring all characters into one room.
+  - Vary the order and length of viewpoint sequences. A secondary arena may
+    carry a full chapter, a brief interlude or several chapters, depending on
+    its dramatic momentum. Keep each transition clear in place, time and
+    viewpoint.
+  - Track a separate timeline, character goals, knowledge, resources and open
+    questions for every arena. Cross-check them during every chapter revision
+    so that parallel events remain chronologically and causally consistent.
+  - Before drafting, maintain an arena map: who is where, what each group wants,
+    what each group knows, what is changing offstage, which clues connect the
+    arenas, and when their paths are expected to intersect. Update it after
+    every chapter.
+  - Do not introduce extra arenas merely for scale. Every arena must affect the
+    central conflict or deliver a payoff that becomes essential later.
+
 ## Writing a chapter
 
 - Enter the scene late and leave early. Skip the arrival, the greetings and the
